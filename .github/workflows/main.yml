@@ -2,8 +2,8 @@ name: Racing Monitor Bot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # 每 15 分鐘執行一次
-  workflow_dispatch:      # 允許你手動點擊執行測試
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -26,16 +26,22 @@ jobs:
           pip install -r requirements.txt
           playwright install chromium
 
-      - name: Run Racing Bot
+      - name: Update Entries Database
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python Get_Entries.py
+
+      - name: Run Racing Monitor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python Race.py
 
-      - name: Commit and Push last_odds.json
+      - name: Commit Data Changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "action@github.com"
-          git add last_odds.json || exit 0
-          git commit -m "Update last odds data" || exit 0
+          git add today_entries.json last_odds.json || exit 0
+          git commit -m "Update entries and odds data" || exit 0
           git push
