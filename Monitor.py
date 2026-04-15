@@ -2,10 +2,11 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import logging
+import os
 
 # --- 配置區 ---
-telegram_token = os.getenv("TELEGRAM_TOKEN")
-chat_id = os.getenv("CHAT_ID")
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 # 馬會賠率介面 URL (範例為獨贏賠率)
 URL = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
 
