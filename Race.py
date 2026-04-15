@@ -1,82 +1,71 @@
 import requests
 from bs4 import BeautifulSoup
-import time
 import logging
 import os
+import json
 
 # --- 配置區 ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
-# 馬會賠率介面 URL (範例為獨贏賠率)
 URL = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
-
-# 設定落飛警報閾值 (例如賠率下跌超過 20%)
-DROP_THRESHOLD = 0.2 
-
-# 儲存上一次抓取的賠率
-last_odds = {}
+DATA_FILE = "last_odds.json"
 
 logging.basicConfig(level=logging.INFO)
 
 def send_telegram_msg(message):
+    if not TOKEN: return
     target_url = f"https://api.telegram.org/bot{TOKEN}/sendMessage?chat_id={CHAT_ID}&text={message}"
-    try:
-        requests.get(target_url)
-    except Exception as e:
-        logging.error(f"Telegram 發送失敗: {e}")
+    requests.get(target_url)
+
+def load_previous_odds():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_current_odds(odds):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(odds, f)
 
 def get_live_odds():
-    """
-    抓取馬會網頁賠率 (注意：馬會動態網頁可能需要處理 JavaScript，
-    此處為基礎爬蟲邏輯，若抓不到建議改用 Selenium)
-    """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    
-    response = requests.get(URL, headers=headers)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    current_race_odds = {}
-    
-    # 這裡的 Selector 需要根據馬會網頁實際的 HTML 標籤不斷更新
-    # 假設馬匹編號在 .horse_no，賠率在 .win_odds
-    horses = soup.select('.horse_item') 
-    for horse in horses:
-        try:
-            no = horse.select_one('.horse_no').text.strip()
-            win_odds = float(horse.select_one('.win_odds').text.strip())
-            current_race_odds[no] = win_odds
-        except:
-            continue
-            
-    return current_race_odds
-
-def monitor():
-    global last_odds
-    logging.info("賽馬監控機器人已啟動...")
-    
-    while True:
-        current_odds = get_live_odds()
+    # 注意：這裡可能需要改用 Selenium 才能抓到實際數字
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        response = requests.get(URL, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        current_race_odds = {}
         
-        if not current_odds:
-            logging.warning("未能獲取數據，等待下一輪...")
-        else:
-            for no, odds in current_odds.items():
-                if no in last_odds:
-                    old_odds = last_odds[no]
-                    # 計算跌幅
-                    drop_rate = (old_odds - odds) / old_odds
-                    
-                    if drop_rate >= DROP_THRESHOLD:
-                        msg = f"⚠️ 【落飛警報】\n馬匹編號：{no}號\n原賠率：{old_odds}\n現賠率：{odds}\n跌幅：{drop_rate:.1%}"
-                        print(msg)
-                        send_telegram_msg(msg)
-            
-            last_odds = current_odds
-            
-        # 每 5 分鐘檢查一次（賽前建議縮短至 1 分鐘）
-        time.sleep(300)
+        # 這裡需要根據馬會實際 HTML 結構精確定位
+        # 提示：馬會現在很多數據在 <iframe> 或 AJAX 請求中
+        horses = soup.select('.horse_item') 
+        for horse in horses:
+            try:
+                no = horse.select_one('.horse_no').text.strip()
+                win_odds = float(horse.select_one('.win_odds').text.strip())
+                current_race_odds[no] = win_odds
+            except: continue
+        return current_race_odds
+    except Exception as e:
+        logging.error(f"抓取失敗: {e}")
+        return {}
+
+def run_once():
+    logging.info("執行單次監控檢查...")
+    last_odds = load_previous_odds()
+    current_odds = get_live_odds()
+    
+    if not current_odds:
+        logging.warning("抓不到數據。如果是 GitHub Actions，可能需要處理瀏覽器環境。")
+        return
+
+    for no, odds in current_odds.items():
+        if no in last_odds:
+            old_odds = last_odds[no]
+            drop_rate = (old_odds - odds) / old_odds
+            if drop_rate >= 0.2:
+                send_telegram_msg(f"⚠️ 落飛警報：{no}號，賠率由 {old_odds} 跌至 {odds}")
+
+    save_current_odds(current_odds)
 
 if __name__ == "__main__":
-    monitor()
+    run_once()
