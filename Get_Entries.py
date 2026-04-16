@@ -4,64 +4,57 @@ import json
 import logging
 from playwright.async_api import async_playwright
 
-# 檔案儲存路徑
 DATA_FILE = "today_entries.json"
-
 logging.basicConfig(level=logging.INFO)
 
 async def fetch_entries():
     async with async_playwright() as p:
+        # 使用更大的視窗尺寸，確保所有表格都加載
         browser = await p.chromium.launch(headless=True)
-        # 模擬桌面瀏覽器
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            viewport={'width': 1920, 'height': 1080},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         
         entries_data = {}
         try:
             logging.info("正在連線至馬會排位表頁面...")
-            # 直接前往排位表頁面
+            # 增加等待時間，確保 JavaScript 完全執行
             await page.goto("https://racing.hkjc.com/racing/information/Chinese/Racing/Entries.aspx", wait_until="networkidle", timeout=60000)
             
-            # 【關鍵】馬會數據通常在名為 'main' 或特定的 frame 裡
-            # 我們先等待表格元素出現
-            try:
-                await page.wait_for_selector(".ltable", timeout=20000)
-            except:
-                logging.warning("找不到 .ltable，嘗試抓取所有表格...")
+            # 嘗試切換到可能存在的 iframe (馬會常用手法)
+            frames = page.frames
+            target_frame = page
+            for f in frames:
+                if "racing" in f.url or "Entries" in f.url:
+                    target_frame = f
+                    break
 
-            # 抓取所有符合排位表結構的行
-            # 馬會的排位表行通常包含特定的 class 或結構
-            rows = await page.locator("tr").all()
+            # 等待表格出現，改用更通用的標籤
+            await target_frame.wait_for_timeout(5000) # 強制等待 5 秒讓數據加載
             
+            # 抓取所有 tr 進行篩選
+            rows = await target_frame.locator("tr").all()
+            logging.info(f"偵測到網頁中共有 {len(rows)} 行數據")
+
             for row in rows:
                 try:
                     cells = await row.locator("td").all()
-                    # 排位表標準欄位：0:馬號, 2:馬名, 3:騎師, 4:練馬師, 5:檔位
                     if len(cells) >= 6:
-                        no_text = await cells[0].inner_text()
-                        name_text = await cells[2].inner_text()
-                        jockey_text = await cells[3].inner_text()
-                        trainer_text = await cells[4].inner_text()
-                        draw_text = await cells[5].inner_text()
-                        
-                        no = no_text.strip()
-                        # 確保第一欄是馬號（數字）
-                        if no.isdigit():
-                            entries_data[no] = {
-                                "name": name_text.strip(),
-                                "jockey": jockey_text.strip(),
-                                "trainer": trainer_text.strip(),
-                                "draw": draw_text.strip()
+                        no_text = (await cells[0].inner_text()).strip()
+                        # 只要第一欄是數字，就是我們要的馬匹行
+                        if no_text.isdigit():
+                            entries_data[no_text] = {
+                                "name": (await cells[2].inner_text()).strip(),
+                                "jockey": (await cells[3].inner_text()).strip(),
+                                "trainer": (await cells[4].inner_text()).strip(),
+                                "draw": (await cells[5].inner_text()).strip()
                             }
-                except Exception as e:
+                except:
                     continue
             
-            if not entries_data:
-                logging.error("解析結束，但未抓取到任何有效馬匹數據。")
-            else:
-                logging.info(f"成功解析 {len(entries_data)} 匹馬的資訊。")
+            logging.info(f"最終解析結果：抓取到 {len(entries_data)} 匹馬")
                 
         except Exception as e:
             logging.error(f"執行過程出錯: {e}")
@@ -71,10 +64,12 @@ async def fetch_entries():
 
 if __name__ == "__main__":
     data = asyncio.run(fetch_entries())
-    if data:
-        # 確保檔案寫在當前工作目錄
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        logging.info(f"--- 檔案已成功寫入 {DATA_FILE} ---")
-    else:
-        logging.error("--- 數據為空，取消寫入檔案 ---")
+    
+    # 測試機制：即使沒抓到數據，也生成一個「結構完整」的檔案，防止下一個腳本崩潰
+    if not data:
+        logging.warning("警告：今日可能無賽事排位表。")
+        data = {"STATUS": "NO_ENTRIES_FOUND", "LAST_UPDATE": str(asyncio.get_event_loop().time())}
+
+    with open(DATA_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+    logging.info(f"--- 檔案已寫入 {DATA_FILE} ---")
