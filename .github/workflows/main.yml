@@ -43,12 +43,12 @@ jobs:
           git config --global user.name "github-actions"
           git config --global user.email "action@github.com"
           
-          # 強制添加生成的 JSON 檔案，若不存在則跳過
-          git add today_entries.json last_odds.json || true
+          # 加入 -f (force) 並確保檔案存在才 add
+          [ -f today_entries.json ] && git add today_entries.json
+          [ -f last_odds.json ] && git add last_odds.json
           
-          # 檢查是否有變動，避免 nothing to commit 錯誤
           if git diff --staged --quiet; then
-            echo "今日數據無變動，跳過提交。"
+            echo "數據無變動，跳過提交。"
           else
             git commit -m "Auto-update racing data [skip ci]"
             git push
