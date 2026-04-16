@@ -49,13 +49,14 @@ async def fetch_entries():
 if __name__ == "__main__":
     data = asyncio.run(fetch_entries())
     
-    # 這裡加入時間戳，確保每次執行 JSON 內容都不一樣，強制 Git 必須 Push
-    output = {
-        "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    # 【關鍵：加入時間戳】確保每次產出的 JSON 內容都不同，強制 Git 必須提交
+    import time
+    final_output = {
+        "update_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "horse_count": len(data),
-        "data": data
+        "entries": data
     }
-    
+
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(output, f, ensure_ascii=False, indent=4)
-    logging.info(f"--- 檔案已成功寫入 {DATA_FILE}，抓到 {len(data)} 匹馬 ---")
+        json.dump(final_output, f, ensure_ascii=False, indent=4)
+    logging.info(f"--- 檔案已成功寫入 {DATA_FILE} ---")
