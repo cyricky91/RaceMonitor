@@ -2,14 +2,14 @@ name: Racing Monitor Bot
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
-  workflow_dispatch:
+    - cron: '*/15 * * * *'  # 每 15 分鐘運行一次
+  workflow_dispatch:      # 允許手動點擊按鈕執行
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write    # 必須開啟寫入權限，否則無法儲存 JSON
 
     steps:
       - name: Checkout code
@@ -38,10 +38,18 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python Race.py
 
-      - name: Commit Data Changes
+      - name: Commit and Push Data Changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "action@github.com"
-          git add today_entries.json last_odds.json || exit 0
-          git commit -m "Update entries and odds data" || exit 0
-          git push
+          
+          # 強制添加生成的 JSON 檔案，若不存在則跳過
+          git add today_entries.json last_odds.json || true
+          
+          # 檢查是否有變動，避免 nothing to commit 錯誤
+          if git diff --staged --quiet; then
+            echo "今日數據無變動，跳過提交。"
+          else
+            git commit -m "Auto-update racing data [skip ci]"
+            git push
+          fi
