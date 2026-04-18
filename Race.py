@@ -6,70 +6,70 @@ from playwright.async_api import async_playwright
 
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
+# 賠率頁面
 URL = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
 ODDS_FILE = "last_odds.json"
 ENTRIES_FILE = "today_entries.json"
 
-def send_tg(msg):
-    if TOKEN and CHAT_ID:
-        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
-                      json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-
-async def main():
+async def fetch_odds_safe():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        # 增加啟動參數偽裝
+        browser = await p.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        page = await context.new_page()
         current_odds = {}
-        race_no = "1"
         
         try:
-            await page.goto(URL, wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(5000)
+            # 延長超時並模擬真人滾動
+            await page.goto(URL, wait_until="load", timeout=90000)
+            await page.mouse.wheel(0, 500) 
+            await asyncio.sleep(5)
             
-            # 獲取場次
-            try:
-                race_text = await page.locator(".raceNoTab.active").inner_text()
-                race_no = "".join(filter(str.isdigit, race_text))
-            except: pass
-
-            # 抓取賠率單元格
-            odds_cells = await page.locator(".win_odds").all()
-            for i, cell in enumerate(odds_cells):
-                val = (await cell.inner_text()).strip()
-                if val.replace('.', '').isdigit():
-                    current_odds[str(i+1)] = float(val)
+            # 獲取所有賠率數字
+            odds_elements = await page.query_selector_all(".win_odds")
+            for i, el in enumerate(odds_elements):
+                text = (await el.inner_text()).strip()
+                if text and text.replace('.', '').isdigit():
+                    current_odds[str(i+1)] = float(text)
+        except Exception as e:
+            print(f"抓取異常: {e}")
         finally:
             await browser.close()
+        return current_odds
 
-    if not current_odds: return
+async def main():
+    current_odds = await fetch_odds_safe()
+    if not current_odds:
+        print("未能獲取當前賠率數據")
+        return
 
-    # 載入數據
+    # 載入舊數據
     last_odds = {}
     if os.path.exists(ODDS_FILE):
         with open(ODDS_FILE, 'r') as f: last_odds = json.load(f)
 
+    # 載入馬名 (如果有的話)
     entries = {}
     if os.path.exists(ENTRIES_FILE):
-        with open(ENTRIES_FILE, 'r', encoding='utf-8') as f:
-            entries = json.load(f).get('entries', {})
+        try:
+            with open(ENTRIES_FILE, 'r', encoding='utf-8') as f:
+                entries = json.load(f).get('entries', {})
+        except: pass
 
-    # 比對賠率變動
+    alerts = []
     for no, odds in current_odds.items():
         if no in last_odds:
             old = last_odds[no]
-            # 跌幅超過 15% 觸發報警
+            # 觸發門檻：跌幅 15%
             if old > odds and (old - odds) / old >= 0.15:
-                name = entries.get(no, {}).get('name', f'馬匹 {no}')
-                # 🏇 依照你要求的格式輸出
-                report = (
-                    f"🏇 *落飛警報：第 {race_no} 場*\n"
-                    f"🎯 *心水推薦*：{no}號 {name}\n"
-                    f"⚡ *賠率變動*：{old} 📉 *{odds}*\n"
-                    f"📊 *狀態*：發現大戶資金流入！"
-                )
-                send_tg(report)
+                name = entries.get(no, {}).get('name', f'{no}號馬')
+                alerts.append(f"🏇 *落飛警報*\n🎯 推薦：{name}\n📉 賠率：{old} ➡️ *{odds}*")
 
-    # 儲存本次賠率供下次比對
+    if alerts and TOKEN and CHAT_ID:
+        msg = "🔔 *【大戶資金即時監控】*\n\n" + "\n\n".join(alerts)
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+    
+    # 存檔
     with open(ODDS_FILE, 'w') as f:
         json.dump(current_odds, f)
 
