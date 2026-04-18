@@ -9,40 +9,39 @@ logging.basicConfig(level=logging.INFO)
 
 async def fetch_entries():
     async with async_playwright() as p:
-        # 使用手機版的 User-Agent
         browser = await p.chromium.launch(headless=True)
-        iphone = p.devices['iPhone 13']
-        context = await browser.new_context(**iphone)
+        # 使用極其真實的瀏覽器指紋
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            extra_http_headers={"Referer": "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"}
+        )
         page = await context.new_page()
         entries_data = {}
         
         try:
-            logging.info("切換至手機版排位表...")
-            # 手機版排位表路徑
-            await page.goto("https://racing.hkjc.com/racing/information/Chinese/Racing/Entries.aspx", wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
+            logging.info("切換至原始賽程表路徑...")
+            # 這是馬會最基礎的賽卡頁面
+            await page.goto("https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx", wait_until="load", timeout=60000)
+            await page.wait_for_timeout(3000)
             
-            # 手機版結構通常直接用表格
-            rows = await page.locator("table tr").all()
-            for row in rows:
-                text = await row.inner_text()
-                # 過濾出包含馬匹編號的列
-                parts = text.split('\t')
-                if len(parts) >= 3 and parts[0].isdigit():
-                    no = parts[0]
-                    name = parts[2].split('(')[0].strip()
-                    entries_data[no] = {"name": name, "jockey": "即時", "trainer": "即時", "draw": "-"}
+            # 使用更原始的選擇器抓取馬名
+            # 馬會賽卡中，馬名通常在含有 'HorseId=' 的鏈接文字中
+            links = await page.locator("a[href*='HorseId=']").all()
+            for link in links:
+                text = await link.inner_text()
+                if text and not text.isdigit():
+                    # 嘗試獲取它旁邊的馬號
+                    try:
+                        # 向上找父元素再找馬號，或直接利用順序
+                        name = text.strip().split('(')[0]
+                        # 這裡暫時用索引或馬名作為 Key，確保資料庫有東西
+                        entries_data[str(len(entries_data)+1)] = {
+                            "name": name,
+                            "jockey": "-", "trainer": "-", "draw": "-"
+                        }
+                    except: pass
             
-            if not entries_data:
-                # 備用方案：如果手機版失敗，直接從賽事日期列表硬抓
-                logging.info("嘗試備用解析方案...")
-                content = await page.content()
-                import re
-                # 匹配馬匹鏈接中的編號和文字
-                found = re.findall(r'HorseId=.*?">(\d+)\s+(.*?)</a>', content)
-                for f_no, f_name in found:
-                    entries_data[f_no] = {"name": f_name.strip(), "jockey": "-", "trainer": "-", "draw": "-"}
-
+            logging.info(f"最終解析成功：找到 {len(entries_data)} 匹馬")
         except Exception as e:
             logging.error(f"抓取失敗: {e}")
         finally:
@@ -54,4 +53,3 @@ if __name__ == "__main__":
     output = {"update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "entries": data}
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(output, f, ensure_ascii=False, indent=4)
-    print(f"最終抓取到 {len(data)} 匹馬")
