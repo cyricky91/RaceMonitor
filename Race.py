@@ -6,7 +6,6 @@ from playwright.async_api import async_playwright
 import requests
 from datetime import datetime
 
-# --- 配置區 ---
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
 URL = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
@@ -17,53 +16,40 @@ logging.basicConfig(level=logging.INFO)
 
 def send_telegram_msg(message):
     if not TOKEN or not CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        logging.error(f"Telegram 發送失敗: {e}")
-
-def get_horse_info(horse_no):
-    if os.path.exists(ENTRIES_FILE):
-        try:
-            with open(ENTRIES_FILE, 'r', encoding='utf-8') as f:
-                content = json.load(f)
-                entries = content.get('entries', {})
-                return entries.get(str(horse_no))
-        except: pass
-    return None
+    requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", 
+                  data={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
 
 async def fetch_current_odds():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)")
+        context = await browser.new_context(viewport={'width': 1280, 'height': 800})
         page = await context.new_page()
         current_odds = {}
-        race_no = "X"
+        race_no = "1"
         try:
-            logging.info("正在訪問馬會賠率頁面...")
-            await page.goto(URL, wait_until="networkidle", timeout=60000)
+            logging.info("正在訪問賠率頁面...")
+            # 這裡增加了一個特殊的等待條件
+            await page.goto(URL, wait_until="load")
+            await page.wait_for_selector(".win_odds", timeout=15000)
             
-            # 偵測目前是第幾場
+            # 偵測場次
             try:
-                race_no_raw = await page.locator(".raceNo").first.inner_text()
-                race_no = "".join(filter(str.isdigit, race_no_raw))
+                race_no = await page.locator("#raceNoTab td.active").inner_text()
+                race_no = "".join(filter(str.isdigit, race_no))
             except: pass
 
-            # 檢查賠率表是否加載
-            if await page.locator(".win_odds").count() == 0:
-                logging.info("目前無賠率數據顯示。")
-                return {}, race_no
-
-            rows = await page.locator("tr.update_odds_row").all()
+            # 使用暴力法遍歷所有可能包含賠率的行
+            rows = await page.locator("tr").all()
             for row in rows:
-                try:
-                    no = (await row.locator(".horse_no").inner_text()).strip()
-                    odds_text = (await row.locator(".win_odds").inner_text()).strip()
-                    if odds_text.replace('.', '').isdigit():
-                        current_odds[no] = float(odds_text)
-                except: continue
+                if await row.locator("td.horse_no").count() > 0:
+                    no = (await row.locator("td.horse_no").inner_text()).strip()
+                    odds_cell = row.locator("td.win_odds")
+                    if await odds_cell.count() > 0:
+                        odds_text = (await odds_cell.inner_text()).strip()
+                        if odds_text.replace('.', '').isdigit():
+                            current_odds[no] = float(odds_text)
+        except Exception as e:
+            logging.error(f"賠率抓取失敗: {e}")
         finally:
             await browser.close()
         return current_odds, race_no
@@ -76,37 +62,35 @@ async def main():
         except: pass
 
     current_odds, race_no = await fetch_current_odds()
-    if not current_odds: return
+    if not current_odds: 
+        logging.warning("未能獲取當前賠率數據。")
+        return
+
+    # 讀取排位資料庫
+    entries = {}
+    if os.path.exists(ENTRIES_FILE):
+        try:
+            with open(ENTRIES_FILE, 'r', encoding='utf-8') as f:
+                entries = json.load(f).get('entries', {})
+        except: pass
 
     alerts = []
     for no, odds in current_odds.items():
         if no in last_odds:
             old_odds = last_odds[no]
-            if old_odds > odds:
-                drop_rate = (old_odds - odds) / old_odds
-                # 門檻：跌幅 > 15% 且賠率具備監控價值
-                if drop_rate >= 0.15 and 2.0 < odds < 50.0:
-                    info = get_horse_info(no)
-                    name = info.get('name', '未知馬名') if info else "即時新馬"
-                    draw = info.get('draw', '-') if info else "-"
-                    jockey = info.get('jockey', '未知') if info else "未知"
-                    trainer = info.get('trainer', '未知') if info else "未知"
-                    
-                    # --- 依照你要求的格式進行 Emoji 分類 ---
-                    report = (
-                        f"🏇 *落飛警報：第 {race_no} 場 {no}號 {name}*\n"
-                        f"🎯 *心水狀態*：{old_odds} 📉 *{odds}* (跌幅 {drop_rate:.0%})\n"
-                        f"📊 *優勢*：{draw}檔 | {jockey} ({trainer})\n"
-                        f"⚡ *提示*：資金異動，建議留意走勢"
-                    )
-                    alerts.append(report)
+            if old_odds > odds and (old_odds - odds) / old_odds >= 0.15:
+                info = entries.get(no, {})
+                report = (
+                    f"🏇 *落飛警報：第 {race_no} 場 {no}號 {info.get('name', '未知')}*\n"
+                    f"🎯 *賠率變動*：{old_odds} ➡️ *{odds}*\n"
+                    f"📊 *優勢*：{info.get('draw','-')}檔 | {info.get('jockey','-')}\n"
+                    f"⚡ *提示*：發現異常大注資金流入！"
+                )
+                alerts.append(report)
 
     if alerts:
-        now = datetime.now().strftime("%H:%M:%S")
-        send_telegram_msg(f"🔔 *【HKJC 資金流向監控】* ({now})\n" + "─" * 15 + "\n\n" + "\n\n".join(alerts))
-    elif not last_odds:
-        logging.info("首輪運行，已記錄基準賠率。")
-
+        send_telegram_msg(f"🔔 *【HKJC 資金監控報告】*\n" + "─"*15 + "\n\n" + "\n\n".join(alerts))
+    
     with open(ODDS_FILE, 'w') as f:
         json.dump(current_odds, f)
 
