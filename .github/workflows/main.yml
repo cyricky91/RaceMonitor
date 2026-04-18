@@ -34,12 +34,14 @@ jobs:
           python Get_Entries.py
           python Race.py
 
-      - name: Commit and Push
+      - name: Commit Data Changes
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "action@github.com"
           git add today_entries.json last_odds.json || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Update racing data [skip ci]"
+          if git diff --cached --quiet; then
+            echo "今日數據無變動，跳過提交。"
+          else
+            git commit -m "Auto-update racing data [skip ci]"
             git push
           fi
