@@ -61,7 +61,7 @@ async def main():
         if no in last_odds:
             old = last_odds[no]
             # 觸發門檻：跌幅 15%
-            if old > odds and (old - odds) / old >= 0.15:
+            if old > odds and (old - odds) / old >= 0.0001:
                 name = entries.get(no, {}).get('name', f'{no}號馬')
                 alerts.append(f"🏇 *落飛警報*\n🎯 推薦：{name}\n📉 賠率：{old} ➡️ *{odds}*")
 
