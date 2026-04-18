@@ -24,47 +24,31 @@ async def fetch_current_odds():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         current_odds = {}
-        race_no = "X"
         try:
-            logging.info("正在訪問馬會賠率頁面...")
-            # 增加重試與等待邏輯
-            await page.goto(URL, wait_until="networkidle", timeout=60000)
+            await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(5) # 給予足夠渲染時間
             
-            # 嘗試偵測場次
-            try:
-                race_no_tag = page.locator(".raceNo").first
-                if await race_no_tag.count() > 0:
-                    race_no = "".join(filter(str.isdigit, await race_no_tag.inner_text()))
-            except: pass
-
-            # 檢查是否有賠率標籤
-            win_odds_locator = page.locator(".win_odds")
-            if await win_odds_locator.count() == 0:
-                logging.warning("找不到預期的賠率標籤，可能尚未開售。")
-                return {}, race_no
-
-            # 精確抓取數據行
-            rows = await page.locator("tr.update_odds_row").all()
-            for row in rows:
-                no = (await row.locator(".horse_no").inner_text()).strip()
-                odds_text = (await row.locator(".win_odds").inner_text()).strip()
-                if odds_text.replace('.', '').isdigit():
-                    current_odds[no] = float(odds_text)
-                    
+            # 嘗試抓取所有賠率單元格
+            cells = await page.locator(".win_odds").all()
+            for i, cell in enumerate(cells):
+                val = (await cell.inner_text()).strip()
+                if val.replace('.','').isdigit():
+                    current_odds[str(i+1)] = float(val)
         except Exception as e:
-            logging.error(f"賠率抓取失敗: {e}")
+            logging.error(f"賠率抓取異常: {e}")
         finally:
             await browser.close()
-        return current_odds, race_no
+        return current_odds
 
 async def main():
-    # 讀取舊數據
     last_odds = {}
     if os.path.exists(ODDS_FILE):
         with open(ODDS_FILE, 'r') as f: last_odds = json.load(f)
 
-    current_odds, race_no = await fetch_current_odds()
-    if not current_odds: return
+    current_odds = await fetch_current_odds()
+    if not current_odds: 
+        logging.info("暫無即時賠率數據。")
+        return
 
     # 讀取排位數據
     entries = {}
@@ -76,26 +60,19 @@ async def main():
     for no, odds in current_odds.items():
         if no in last_odds:
             old_odds = last_odds[no]
-            # 設定 15% 跌幅預警
             if old_odds > odds and (old_odds - odds) / old_odds >= 0.15:
-                info = entries.get(no, {})
-                name = info.get('name', '未知')
-                jockey = info.get('jockey', '未知')
-                draw = info.get('draw', '-')
-                
-                # 🏇 使用你要求的格式
+                info = entries.get(no, {"name": f"馬匹{no}"})
                 msg = (
-                    f"🏇 *落飛警報：第 {race_no} 場*\n"
-                    f"🎯 *心水推薦*：{no}號 {name}\n"
-                    f"📊 *優勢分析*：{draw}檔 | {jockey}\n"
-                    f"⚡ *賠率變動*：{old_odds} 📉 *{odds}*"
+                    f"🏇 *落飛警報*\n"
+                    f"🎯 *目標*：{no}號 {info['name']}\n"
+                    f"📊 *變動*：{old_odds} 📉 *{odds}*\n"
+                    f"⚡ *提示*：資金異動中！"
                 )
                 alerts.append(msg)
 
     if alerts:
-        send_telegram_msg(f"🔔 *【HKJC 即時大戶監控】*\n\n" + "\n\n".join(alerts))
+        send_telegram_msg("🔔 *【即時資金監控報告】*\n\n" + "\n\n".join(alerts))
     
-    # 儲存新數據
     with open(ODDS_FILE, 'w') as f:
         json.dump(current_odds, f)
 
