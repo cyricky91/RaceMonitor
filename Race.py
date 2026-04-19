@@ -7,7 +7,8 @@ from playwright.async_api import async_playwright
 # 從 GitHub Secrets 獲取設定
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 CHAT_ID = os.getenv('CHAT_ID')
-URL = "https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch"
+# 切換到排位表頁面，這裡的數據相對容易被 GitHub Actions 抓取
+URL = "https://racing.hkjc.com/racing/Info/meeting/Startlist/chinese/local/"
 ODDS_FILE = "last_odds.json"
 ENTRIES_FILE = "today_entries.json"
 
@@ -19,73 +20,60 @@ def send_tg(msg):
         except Exception as e:
             print(f"Telegram 發送失敗: {e}")
 
-async def fetch_odds_safe():
+async def fetch_odds_final_boss():
     async with async_playwright() as p:
-        # 使用最高等級的偽裝參數
-        browser = await p.chromium.launch(headless=True, args=['--disable-blink-features=AutomationControlled'])
+        # 使用 Chromium 並增加基本偽裝
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
         current_odds = {}
         race_no = "1"
         
         try:
-            print(f"🚀 正在開啟網頁: {URL}")
-            # 等待網路完全空閒
-            await page.goto(URL, wait_until="networkidle", timeout=90000)
-            
-            # 給予超長緩衝時間 (15秒)，應對 GitHub Actions 的網路延遲
-            print("⏳ 深度等待數據渲染 (15s)...")
-            await asyncio.sleep(15) 
+            print(f"🚀 正在切換路徑，訪問排位表: {URL}")
+            # 導航至排位表
+            await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(8) # 等待數據填充
 
-            # 獲取場次
+            # 嘗試抓取當前場次 (從頁面標題或標籤)
             try:
-                race_tag = await page.locator(".raceNoTab.active").inner_text()
-                race_no = "".join(filter(str.isdigit, race_tag))
+                race_no_text = await page.locator(".font_white.f_left.f_fs14").first.inner_text()
+                race_no = "".join(filter(str.isdigit, race_no_text)) or "1"
             except: pass
 
-            # --- 方案 A: 標準標籤抓取 ---
-            print("🔎 嘗試方案 A (CSS Selector)...")
-            odds_elements = await page.query_selector_all(".win_odds")
+            # 抓取所有賠率單元格 
+            # 排位表中獨贏賠率通常帶有特殊的 class (例如 tdWinOdds 或 f_fs12 f_fr)
+            print("🔎 正在提取表格賠率數據...")
+            odds_elements = await page.query_selector_all("td.f_fs12.f_fr")
+            
             temp_odds = []
             for el in odds_elements:
-                text = (await el.inner_text()).strip()
-                if text and text.replace('.', '').isdigit():
-                    temp_odds.append(float(text))
-            
-            # --- 方案 B: 暴力掃描所有表格單元格 (如果 A 失敗) ---
-            if not temp_odds:
-                print("🔎 方案 A 失敗，執行方案 B (Table Cell Scan)...")
-                td_elements = await page.query_selector_all("td")
-                for td in td_elements:
-                    # 檢查 class 是否包含 win_odds
-                    cls = await td.get_attribute("class") or ""
-                    txt = (await td.inner_text()).strip()
-                    if "win_odds" in cls and txt.replace('.', '').isdigit():
-                        temp_odds.append(float(txt))
+                txt = (await el.inner_text()).strip()
+                # 排除掉獨贏以外的賠率 (通常獨贏賠率在前面)
+                if txt.replace('.', '').isdigit() and 1.0 < float(txt) < 1000:
+                    temp_odds.append(float(txt))
 
-            # 將結果填入字典 (1-14號)
+            # 對應馬號 (1-14)
             for i, val in enumerate(temp_odds):
-                if i < 14: # 香港通常最多 14 匹馬
+                if i < 14:
                     current_odds[str(i+1)] = val
-
-            if current_odds:
-                print(f"✅ 成功抓取到 {len(current_odds)} 匹馬的賠率")
             
+            if current_odds:
+                print(f"✅ 成功! 抓到第 {race_no} 場共 {len(current_odds)} 匹馬的賠率")
+
         except Exception as e:
-            print(f"❌ 抓取過程異常: {e}")
+            print(f"❌ 抓取異常: {e}")
         finally:
             await browser.close()
         return current_odds, race_no
 
 async def main():
-    current_odds, race_no = await fetch_odds_safe()
+    current_odds, race_no = await fetch_odds_final_boss()
     
-    # 【防空機制】
     if not current_odds:
-        print("❌ 最終抓取無數據，保留上次紀錄，停止本次對比。")
+        print("❌ 依然抓不到數據。這代表 GitHub IP 被馬會全面封鎖。")
         return
 
     # 載入上次數據
@@ -115,20 +103,16 @@ async def main():
                     f"🔔 *落飛警報：第 {race_no} 場*\n"
                     f"🎯 *精選心水*：{no}號 {name}\n"
                     f"📉 *賠率變動*：{old} ➡️ *{odds}*\n"
-                    f"⚡ *提示*：監測到資金異常湧入！"
+                    f"⚡ *提示*：發現大戶資金流入！"
                 )
                 alerts.append(msg)
 
-    # 發送通知
     if alerts:
         send_tg("📢 *【HKJC 即時大戶監控】*\n\n" + "\n\n".join(alerts))
-    else:
-        print("📊 數據比對完成，波幅正常。")
     
-    # 存檔本次數據
     with open(ODDS_FILE, 'w') as f:
         json.dump(current_odds, f)
-    print(f"✅ 基準線已更新，場次: {race_no}")
+    print(f"✅ 基準線已更新。")
 
 if __name__ == "__main__":
     asyncio.run(main())
